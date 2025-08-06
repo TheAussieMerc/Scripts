@@ -4,8 +4,9 @@ enum AUS_BarrelSpinState
 {
     IDLE = 0,
     SPIN_UP = 1,
-    FIRING = 2,
-    SPIN_DOWN = 3
+    READY_TO_FIRE = 2,
+    FIRING = 3,
+    SPIN_DOWN = 4
 }
 
 class AUS_MinigunBarrelController : ScriptGameComponent
@@ -16,6 +17,9 @@ class AUS_MinigunBarrelController : ScriptGameComponent
     
     [Attribute("2151", UIWidgets.EditBox, "Spin-down duration (ms)")]
     protected float m_fSpinDownTime;
+    
+    [Attribute("150", UIWidgets.EditBox, "Firing delay after spin-up (ms)")]
+    protected float m_fFiringDelay;
     
     [Attribute("1750", UIWidgets.EditBox, "Maximum RPM")]
     protected float m_fMaxRPM;
@@ -41,12 +45,19 @@ class AUS_MinigunBarrelController : ScriptGameComponent
     // State Management
     private AUS_BarrelSpinState m_eCurrentState = AUS_BarrelSpinState.IDLE;
     private float m_fStateTimer = 0.0;
-    private float m_fCurrentSpinSpeed = 0.0; // 0.0 to 1.0 normalized
+    private float m_fCurrentSpinSpeed = 0.0;
     private float m_fLastFireTime = -1000.0;
     private float m_fLastStateChangeTime = -1000.0;
     private int m_iPreviousAmmoCount = 0;
     private bool m_bWasFiring = false;
     private bool m_bReloadLocked = false;
+    
+    // Simplified State Gating Variables
+    private bool m_bForceSpinDown = false;
+    private bool m_bSpinUpComplete = false;
+    
+    // Weapon Firing Control
+    private bool m_bWeaponFiringBlocked = false;
     
     // Signal IDs
     private int m_iBarrelSpinSignal = -1;
@@ -63,17 +74,15 @@ class AUS_MinigunBarrelController : ScriptGameComponent
     // Debug
     private float m_fLastDebugTime = -1000.0;
     private float m_fInitTime = -1000.0;
-    private static const float DEBUG_INTERVAL = 200.0; // 200ms between debug outputs
-    private static const float INIT_DEBUG_DELAY = 2000.0; // 2000ms delay before first debug output
+    private static const float DEBUG_INTERVAL = 200.0;
+    private static const float INIT_DEBUG_DELAY = 2000.0;
     
     //------------------------------------------------------------------------------------------------
     override event protected void OnPostInit(IEntity owner)
     {
         super.OnPostInit(owner);
         
-        // Immediate debug to confirm component is loading
-        Print("[AUS_MinigunBarrelController] *** COMPONENT LOADING - VERSION 2.0 ***", LogLevel.NORMAL);
-        Print("[AUS_MinigunBarrelController] *** NEW CODE TEST - VERSION 2.0 ***", LogLevel.NORMAL);
+        Print("[AUS_MinigunBarrelController] *** WEAPON FIRING CONTROL VERSION ***", LogLevel.NORMAL);
         Print("[AUS_MinigunBarrelController] Entity: " + owner.GetName(), LogLevel.NORMAL);
         
         // Find required components
@@ -99,23 +108,19 @@ class AUS_MinigunBarrelController : ScriptGameComponent
             return;
         }
         
-        // Initialize signals
         InitializeSignals();
-        
-        // Initialize animation variables
         InitializeAnimationVariables();
-        
-        Print("[AUS_MinigunBarrelController] InitializeAnimationVariables() called", LogLevel.NORMAL);
         
         // Set initial state
         m_iPreviousAmmoCount = m_Muzzle.GetAmmoCount();
         m_fLastFireTime = System.GetTickCount();
         m_fLastStateChangeTime = System.GetTickCount();
-        m_fInitTime = System.GetTickCount(); // Track initialization time
+        m_fInitTime = System.GetTickCount();
+        
+        // Start with weapon firing blocked
+        m_bWeaponFiringBlocked = true;
         
         SetEventMask(owner, EntityEvent.FRAME);
-        
-        // No debug output during init - wait for delay
     }
     
     //------------------------------------------------------------------------------------------------
@@ -130,8 +135,6 @@ class AUS_MinigunBarrelController : ScriptGameComponent
         m_iFiringActiveSignal = m_SignalsManager.AddOrFindMPSignal("AUS_FiringActive", 0.1, 1.0/30.0, 0, SignalCompressionFunc.Range01);
         
         DebugPrint("Audio signals initialized");
-        
-        // After init delay, announce successful initialization
         GetGame().GetCallqueue().CallLater(DelayedInitMessage, INIT_DEBUG_DELAY, false);
     }
     
@@ -150,15 +153,13 @@ class AUS_MinigunBarrelController : ScriptGameComponent
         m_iVehicleFireReleasedVar = m_AnimationComponent.BindVariableBool("VehicleFireReleased");
         
         DebugPrint("Animation variables bound successfully");
-        
-        // After init delay, announce animation system status
         GetGame().GetCallqueue().CallLater(DelayedAnimationMessage, INIT_DEBUG_DELAY + 100, false);
     }
     
     //------------------------------------------------------------------------------------------------
     override event protected bool OnTicksOnRemoteProxy()
     {
-        return false; // Only run on server/local
+        return false;
     }
     
     //------------------------------------------------------------------------------------------------
@@ -171,29 +172,31 @@ class AUS_MinigunBarrelController : ScriptGameComponent
             
         float currentTime = System.GetTickCount();
         
-        // Detect firing state
-        bool isFiring = DetectFiringState(currentTime);
+        // Detect firing state based on barrel state, not ammo consumption
+        bool isFiring = DetectFiringIntent(currentTime);
         
-        // Update state machine
-        UpdateStateMachine(isFiring, currentTime, timeSlice);
+        // Update state machine with firing delay
+        UpdateStateMachineWithFiringDelay(isFiring, currentTime, timeSlice);
         
-        // Calculate current spin speed based on state and timing
+        // Calculate current spin speed
         CalculateSpinSpeed(timeSlice);
         
-        // Update signals and animation variables
+        // Update outputs
         UpdateOutputs();
         
-        // Handle reload locking
+        // Handle reload and weapon firing control
         UpdateReloadLock();
+        UpdateWeaponFiringControl();
     }
     
     //------------------------------------------------------------------------------------------------
-    private bool DetectFiringState(float currentTime)
+    private bool DetectFiringIntent(float currentTime)
     {
+        // For now, use the same ammo-based detection
+        // Later we can modify this to use trigger input instead
         int currentAmmoCount = m_Muzzle.GetAmmoCount();
         int deltaAmmo = currentAmmoCount - m_iPreviousAmmoCount;
         
-        // Detect firing through ammo consumption
         bool firingDetected = deltaAmmo < 0;
         
         if (firingDetected)
@@ -201,7 +204,6 @@ class AUS_MinigunBarrelController : ScriptGameComponent
             m_fLastFireTime = currentTime;
         }
         
-        // Maintain firing state for tolerance period
         bool isFiring = firingDetected || (currentTime - m_fLastFireTime) < m_fFireDetectionTolerance;
         
         m_iPreviousAmmoCount = currentAmmoCount;
@@ -210,12 +212,11 @@ class AUS_MinigunBarrelController : ScriptGameComponent
     }
     
     //------------------------------------------------------------------------------------------------
-    private void UpdateStateMachine(bool isFiring, float currentTime, float timeSlice)
+    private void UpdateStateMachineWithFiringDelay(bool isFiring, float currentTime, float timeSlice)
     {
         bool stateChanged = false;
         AUS_BarrelSpinState previousState = m_eCurrentState;
         
-        // Check for dead-zone violations
         bool inDeadZone = (currentTime - m_fLastStateChangeTime) < m_fTriggerDeadZone;
         
         switch (m_eCurrentState)
@@ -231,10 +232,45 @@ class AUS_MinigunBarrelController : ScriptGameComponent
             case AUS_BarrelSpinState.SPIN_UP:
                 if (m_fStateTimer >= m_fSpinUpTime)
                 {
+                    m_bSpinUpComplete = true;
+                    DebugPrintImmediate("SPIN_UP completed at " + m_fStateTimer.ToString() + "ms");
+                }
+                
+                if (m_bSpinUpComplete)
+                {
                     if (isFiring)
                     {
+                        EnterReadyToFireState(currentTime);
+                        stateChanged = true;
+                    }
+                    else if (m_bForceSpinDown)
+                    {
+                        StartSpinDown(currentTime);
+                        stateChanged = true;
+                        DebugPrintImmediate("FORCED transition to SPIN_DOWN");
+                    }
+                    else if (!isFiring)
+                    {
+                        StartSpinDown(currentTime);
+                        stateChanged = true;
+                    }
+                }
+                else if (!isFiring && !inDeadZone)
+                {
+                    m_bForceSpinDown = true;
+                    DebugPrintImmediate("Will FORCE SPIN_DOWN when spin-up completes");
+                }
+                break;
+                
+            case AUS_BarrelSpinState.READY_TO_FIRE:
+                if (m_fStateTimer >= m_fFiringDelay)
+                {
+                    if (isFiring)
+                    {
+                        float actualDelay = m_fStateTimer;
                         EnterFiringState(currentTime);
                         stateChanged = true;
+                        DebugPrintImmediate("Firing delay completed after " + actualDelay.ToString() + "ms");
                     }
                     else
                     {
@@ -244,9 +280,18 @@ class AUS_MinigunBarrelController : ScriptGameComponent
                 }
                 else if (!isFiring && !inDeadZone)
                 {
-                    // Trigger released during spin-up (but not in dead zone)
                     StartSpinDown(currentTime);
                     stateChanged = true;
+                    DebugPrintImmediate("Trigger released during firing delay at " + m_fStateTimer.ToString() + "ms");
+                }
+                else
+                {
+                    static float lastDelayDebug = 0;
+                    if (m_fStateTimer - lastDelayDebug > 50.0)
+                    {
+                        DebugPrintImmediate("Firing delay progress: " + m_fStateTimer.ToString() + "ms / " + m_fFiringDelay.ToString() + "ms");
+                        lastDelayDebug = m_fStateTimer;
+                    }
                 }
                 break;
                 
@@ -266,19 +311,17 @@ class AUS_MinigunBarrelController : ScriptGameComponent
                 }
                 else if (isFiring && !inDeadZone)
                 {
-                    // Trigger pulled during spin-down (but not in dead zone)
                     StartSpinUp(currentTime);
                     stateChanged = true;
                 }
                 break;
         }
         
-        // Update state timer
-        m_fStateTimer += timeSlice * 1000.0; // Convert to milliseconds
+        m_fStateTimer += timeSlice * 1000.0;
         
         if (stateChanged)
         {
-            DebugPrint("State changed: " + typename.EnumToString(AUS_BarrelSpinState, previousState) + 
+            DebugPrintImmediate("State changed: " + typename.EnumToString(AUS_BarrelSpinState, previousState) + 
                       " -> " + typename.EnumToString(AUS_BarrelSpinState, m_eCurrentState));
         }
     }
@@ -290,6 +333,22 @@ class AUS_MinigunBarrelController : ScriptGameComponent
         m_fStateTimer = 0.0;
         m_fLastStateChangeTime = currentTime;
         m_bWasFiring = false;
+        m_bSpinUpComplete = false;
+        m_bForceSpinDown = false;
+        
+        DebugPrintImmediate("Starting SPIN_UP - Audio should play once");
+    }
+    
+    //------------------------------------------------------------------------------------------------
+    private void EnterReadyToFireState(float currentTime)
+    {
+        m_eCurrentState = AUS_BarrelSpinState.READY_TO_FIRE;
+        m_fStateTimer = 0.0;
+        m_fLastStateChangeTime = currentTime;
+        m_bSpinUpComplete = false;
+        m_bForceSpinDown = false;
+        
+        DebugPrintImmediate("Entering READY_TO_FIRE - Waiting for firing delay");
     }
     
     //------------------------------------------------------------------------------------------------
@@ -299,6 +358,10 @@ class AUS_MinigunBarrelController : ScriptGameComponent
         m_fStateTimer = 0.0;
         m_fLastStateChangeTime = currentTime;
         m_bWasFiring = true;
+        m_bSpinUpComplete = false;
+        m_bForceSpinDown = false;
+        
+        DebugPrintImmediate("Entering FIRING state - Loop should start NOW");
     }
     
     //------------------------------------------------------------------------------------------------
@@ -307,6 +370,10 @@ class AUS_MinigunBarrelController : ScriptGameComponent
         m_eCurrentState = AUS_BarrelSpinState.SPIN_DOWN;
         m_fStateTimer = 0.0;
         m_fLastStateChangeTime = currentTime;
+        m_bSpinUpComplete = false;
+        m_bForceSpinDown = false;
+        
+        DebugPrintImmediate("Starting SPIN_DOWN - Audio should play once");
     }
     
     //------------------------------------------------------------------------------------------------
@@ -317,6 +384,10 @@ class AUS_MinigunBarrelController : ScriptGameComponent
         m_fLastStateChangeTime = currentTime;
         m_fCurrentSpinSpeed = 0.0;
         m_bWasFiring = false;
+        m_bSpinUpComplete = false;
+        m_bForceSpinDown = false;
+        
+        DebugPrintImmediate("Returned to IDLE");
     }
     
     //------------------------------------------------------------------------------------------------
@@ -331,19 +402,21 @@ class AUS_MinigunBarrelController : ScriptGameComponent
             case AUS_BarrelSpinState.SPIN_UP:
                 {
                     float progress = Math.Clamp(m_fStateTimer / m_fSpinUpTime, 0.0, 1.0);
-                    // Exponential ease-in curve for realistic motor acceleration
                     m_fCurrentSpinSpeed = Math.Pow(progress, m_fSpinUpCurve);
                 }
                 break;
                 
+            case AUS_BarrelSpinState.READY_TO_FIRE:
+                m_fCurrentSpinSpeed = 1.0;
+                break;
+                
             case AUS_BarrelSpinState.FIRING:
-                m_fCurrentSpinSpeed = 1.0; // Full speed
+                m_fCurrentSpinSpeed = 1.0;
                 break;
                 
             case AUS_BarrelSpinState.SPIN_DOWN:
                 {
                     float progress = Math.Clamp(m_fStateTimer / m_fSpinDownTime, 0.0, 1.0);
-                    // Exponential ease-out curve for realistic deceleration
                     m_fCurrentSpinSpeed = Math.Pow(1.0 - progress, m_fSpinDownCurve);
                 }
                 break;
@@ -356,26 +429,24 @@ class AUS_MinigunBarrelController : ScriptGameComponent
         if (!m_SignalsManager)
             return;
             
-        // Update audio signals
         m_SignalsManager.SetSignalValue(m_iBarrelSpinSignal, m_fCurrentSpinSpeed);
         
         int spinUpActive = 0;
+        int firingActive = 0;
+        int spinDownActive = 0;
+        
         if (m_eCurrentState == AUS_BarrelSpinState.SPIN_UP)
             spinUpActive = 1;
-        m_SignalsManager.SetSignalValue(m_iSpinUpActiveSignal, spinUpActive);
-        
-        int spinDownActive = 0;
-        if (m_eCurrentState == AUS_BarrelSpinState.SPIN_DOWN)
+        else if (m_eCurrentState == AUS_BarrelSpinState.FIRING)
+            firingActive = 1;
+        else if (m_eCurrentState == AUS_BarrelSpinState.SPIN_DOWN)
             spinDownActive = 1;
+        
+        m_SignalsManager.SetSignalValue(m_iSpinUpActiveSignal, spinUpActive);
+        m_SignalsManager.SetSignalValue(m_iFiringActiveSignal, firingActive);
         m_SignalsManager.SetSignalValue(m_iSpinDownActiveSignal, spinDownActive);
         
-        int firingActive = 0;
-        if (m_eCurrentState == AUS_BarrelSpinState.FIRING)
-            firingActive = 1;
-        m_SignalsManager.SetSignalValue(m_iFiringActiveSignal, firingActive);
-        
-        // Update animation variables - only when spinning
-        if (m_AnimationComponent) // Only update when actually spinning
+        if (m_AnimationComponent && m_eCurrentState != AUS_BarrelSpinState.IDLE)
         {
             m_AnimationComponent.SetVariableFloat(m_iBarrelSpinSpeedVar, m_fCurrentSpinSpeed);
             m_AnimationComponent.SetVariableInt(m_iSpinStateVar, m_eCurrentState);
@@ -389,19 +460,6 @@ class AUS_MinigunBarrelController : ScriptGameComponent
             if (m_eCurrentState == AUS_BarrelSpinState.SPIN_DOWN)
                 vehicleFireReleased = true;
             m_AnimationComponent.SetVariableBool(m_iVehicleFireReleasedVar, vehicleFireReleased);
-            
-            // Debug variable setting - only when value changes and with delay
-            static float lastDebugValue = -1.0;
-            static float lastVariableDebugTime = -10000.0;
-            float currentTime = System.GetTickCount();
-            
-            if (Math.AbsFloat(m_fCurrentSpinSpeed - lastDebugValue) > 0.01 && 
-                currentTime - lastVariableDebugTime > 5000.0)
-            {
-                Print("[AUS_MinigunBarrelController] BarrelSpinSpeed changed to: " + m_fCurrentSpinSpeed + " (Var ID: " + m_iBarrelSpinSpeedVar + ")", LogLevel.NORMAL);
-                lastDebugValue = m_fCurrentSpinSpeed;
-                lastVariableDebugTime = currentTime;
-            }
         }
     }
     
@@ -426,9 +484,29 @@ class AUS_MinigunBarrelController : ScriptGameComponent
     }
     
     //------------------------------------------------------------------------------------------------
+    private void UpdateWeaponFiringControl()
+    {
+        bool shouldAllowFiring = (m_eCurrentState == AUS_BarrelSpinState.FIRING);
+        
+        if (shouldAllowFiring != !m_bWeaponFiringBlocked)
+        {
+            if (shouldAllowFiring)
+            {
+                m_bWeaponFiringBlocked = false;
+                DebugPrintImmediate("Weapon firing ENABLED - Ready to fire");
+            }
+            else
+            {
+                m_bWeaponFiringBlocked = true;
+                DebugPrintImmediate("Weapon firing BLOCKED - Barrels not ready");
+            }
+        }
+    }
+    
+    //------------------------------------------------------------------------------------------------
     private void DelayedInitMessage()
     {
-        Print("[AUS_MinigunBarrelController] === INITIALIZATION COMPLETE ===", LogLevel.NORMAL);
+        Print("[AUS_MinigunBarrelController] === WEAPON FIRING CONTROL INITIALIZATION COMPLETE ===", LogLevel.NORMAL);
         Print("[AUS_MinigunBarrelController] Component ready for testing", LogLevel.NORMAL);
     }
     
@@ -450,7 +528,6 @@ class AUS_MinigunBarrelController : ScriptGameComponent
     {
         float currentTime = System.GetTickCount();
         
-        // Don't output anything until after the init delay
         if (currentTime - m_fInitTime < INIT_DEBUG_DELAY)
             return;
         
@@ -459,10 +536,23 @@ class AUS_MinigunBarrelController : ScriptGameComponent
             Print("[AUS_MinigunBarrelController] " + message + 
       " | State: " + typename.EnumToString(AUS_BarrelSpinState, m_eCurrentState) + 
       " | Speed: " + m_fCurrentSpinSpeed.ToString() + 
-      " | Timer: " + m_fStateTimer.ToString() + 
-      " | SpinDownTime: " + m_fSpinDownTime.ToString(), LogLevel.NORMAL);
+      " | Timer: " + m_fStateTimer.ToString(), LogLevel.NORMAL);
             m_fLastDebugTime = currentTime;
         }
+    }
+    
+    //------------------------------------------------------------------------------------------------
+    private void DebugPrintImmediate(string message)
+    {
+        float currentTime = System.GetTickCount();
+        
+        if (currentTime - m_fInitTime < INIT_DEBUG_DELAY)
+            return;
+        
+        Print("[AUS_MinigunBarrelController] " + message + 
+      " | State: " + typename.EnumToString(AUS_BarrelSpinState, m_eCurrentState) + 
+      " | Speed: " + m_fCurrentSpinSpeed.ToString() + 
+      " | Timer: " + m_fStateTimer.ToString(), LogLevel.NORMAL);
     }
     
     //------------------------------------------------------------------------------------------------
@@ -484,11 +574,21 @@ class AUS_MinigunBarrelController : ScriptGameComponent
     }
     
     //------------------------------------------------------------------------------------------------
+    bool CanWeaponFire()
+    {
+        return !m_bWeaponFiringBlocked && (m_eCurrentState == AUS_BarrelSpinState.FIRING);
+    }
+    
+    //------------------------------------------------------------------------------------------------
     float GetStateProgress()
     {
         if (m_eCurrentState == AUS_BarrelSpinState.SPIN_UP)
         {
             return Math.Clamp(m_fStateTimer / m_fSpinUpTime, 0.0, 1.0);
+        }
+        else if (m_eCurrentState == AUS_BarrelSpinState.READY_TO_FIRE)
+        {
+            return Math.Clamp(m_fStateTimer / m_fFiringDelay, 0.0, 1.0);
         }
         else if (m_eCurrentState == AUS_BarrelSpinState.SPIN_DOWN)
         {
