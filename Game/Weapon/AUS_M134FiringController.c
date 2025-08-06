@@ -375,7 +375,7 @@ class AUS_MinigunBarrelController : ScriptGameComponent
         m_SignalsManager.SetSignalValue(m_iFiringActiveSignal, firingActive);
         
         // Update animation variables - only when spinning
-        if (m_AnimationComponent && m_fCurrentSpinSpeed > 0.001) // Only update when actually spinning
+        if (m_AnimationComponent) // Only update when actually spinning
         {
             m_AnimationComponent.SetVariableFloat(m_iBarrelSpinSpeedVar, m_fCurrentSpinSpeed);
             m_AnimationComponent.SetVariableInt(m_iSpinStateVar, m_eCurrentState);
@@ -457,9 +457,10 @@ class AUS_MinigunBarrelController : ScriptGameComponent
         if (currentTime - m_fLastDebugTime >= DEBUG_INTERVAL)
         {
             Print("[AUS_MinigunBarrelController] " + message + 
-                  " | State: " + typename.EnumToString(AUS_BarrelSpinState, m_eCurrentState) + 
-                  " | Speed: " + m_fCurrentSpinSpeed.ToString() + 
-                  " | Timer: " + m_fStateTimer.ToString(), LogLevel.NORMAL);
+      " | State: " + typename.EnumToString(AUS_BarrelSpinState, m_eCurrentState) + 
+      " | Speed: " + m_fCurrentSpinSpeed.ToString() + 
+      " | Timer: " + m_fStateTimer.ToString() + 
+      " | SpinDownTime: " + m_fSpinDownTime.ToString(), LogLevel.NORMAL);
             m_fLastDebugTime = currentTime;
         }
     }
