@@ -9,10 +9,24 @@ class AUS_WeaponAnimationComponent: WeaponAnimationComponent
     private ref map<string, int> m_VariableIntIds = new map<string, int>();
     private ref map<string, int> m_VariableBoolIds = new map<string, int>();
     
+    private bool m_bInitialized = false;
+    
+    //------------------------------------------------------------------------------------------------
+    private void CheckInitialization()
+    {
+        if (!m_bInitialized)
+        {
+            m_bInitialized = true;
+            Print("[AUS_WeaponAnimationComponent] Component initialized successfully", LogLevel.NORMAL);
+        }
+    }
+    
     //------------------------------------------------------------------------------------------------
     // Bind a float variable and return its ID for efficient access
     int BindVariableFloat(string variableName)
     {
+        CheckInitialization();
+        
         if (m_VariableFloatIds.Contains(variableName))
             return m_VariableFloatIds.Get(variableName);
             
@@ -20,11 +34,9 @@ class AUS_WeaponAnimationComponent: WeaponAnimationComponent
         if (variableId != -1)
         {
             m_VariableFloatIds.Set(variableName, variableId);
-            Print("[AUS_WeaponAnimationComponent] Bound float variable: " + variableName + " (ID: " + variableId + ")", LogLevel.VERBOSE);
             return variableId;
         }
         
-        Print("[AUS_WeaponAnimationComponent] ERROR: Failed to bind float variable: " + variableName, LogLevel.ERROR);
         return -1;
     }
     
@@ -39,11 +51,9 @@ class AUS_WeaponAnimationComponent: WeaponAnimationComponent
         if (variableId != -1)
         {
             m_VariableIntIds.Set(variableName, variableId);
-            Print("[AUS_WeaponAnimationComponent] Bound int variable: " + variableName + " (ID: " + variableId + ")", LogLevel.VERBOSE);
             return variableId;
         }
         
-        Print("[AUS_WeaponAnimationComponent] ERROR: Failed to bind int variable: " + variableName, LogLevel.ERROR);
         return -1;
     }
     
@@ -58,11 +68,9 @@ class AUS_WeaponAnimationComponent: WeaponAnimationComponent
         if (variableId != -1)
         {
             m_VariableBoolIds.Set(variableName, variableId);
-            Print("[AUS_WeaponAnimationComponent] Bound bool variable: " + variableName + " (ID: " + variableId + ")", LogLevel.VERBOSE);
             return variableId;
         }
         
-        Print("[AUS_WeaponAnimationComponent] ERROR: Failed to bind bool variable: " + variableName, LogLevel.ERROR);
         return -1;
     }
     
@@ -72,15 +80,6 @@ class AUS_WeaponAnimationComponent: WeaponAnimationComponent
     {
         if (variableId == -1)
             return;
-            
-        // Debug variable updates
-        static float lastDebugTime = -10000.0;
-        float currentTime = System.GetTickCount();
-        if (currentTime - lastDebugTime > 2000.0) // Every 2 seconds max
-        {
-            Print("[AUS_WeaponAnimationComponent] SetVariableFloat called - ID: " + variableId + ", Value: " + value, LogLevel.NORMAL);
-            lastDebugTime = currentTime;
-        }
             
         SetFloatVariable(variableId, value);
     }

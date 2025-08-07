@@ -71,19 +71,10 @@ class AUS_MinigunBarrelController : ScriptGameComponent
     private int m_iFiringVar = -1;
     private int m_iVehicleFireReleasedVar = -1;
     
-    // Debug
-    private float m_fLastDebugTime = -1000.0;
-    private float m_fInitTime = -1000.0;
-    private static const float DEBUG_INTERVAL = 200.0;
-    private static const float INIT_DEBUG_DELAY = 2000.0;
-    
     //------------------------------------------------------------------------------------------------
     override event protected void OnPostInit(IEntity owner)
     {
         super.OnPostInit(owner);
-        
-        Print("[AUS_MinigunBarrelController] *** WEAPON FIRING CONTROL VERSION ***", LogLevel.NORMAL);
-        Print("[AUS_MinigunBarrelController] Entity: " + owner.GetName(), LogLevel.NORMAL);
         
         // Find required components
         m_SignalsManager = SignalsManagerComponent.Cast(owner.FindComponent(SignalsManagerComponent));
@@ -91,22 +82,8 @@ class AUS_MinigunBarrelController : ScriptGameComponent
         m_AnimationComponent = AUS_WeaponAnimationComponent.Cast(owner.FindComponent(AUS_WeaponAnimationComponent));
         m_WeaponComponent = BaseWeaponComponent.Cast(owner.FindComponent(BaseWeaponComponent));
         
-        Print("[AUS_MinigunBarrelController] SignalsManager: " + (m_SignalsManager != null), LogLevel.NORMAL);
-        Print("[AUS_MinigunBarrelController] Muzzle: " + (m_Muzzle != null), LogLevel.NORMAL);
-        Print("[AUS_MinigunBarrelController] AnimationComponent: " + (m_AnimationComponent != null), LogLevel.NORMAL);
-        Print("[AUS_MinigunBarrelController] WeaponComponent: " + (m_WeaponComponent != null), LogLevel.NORMAL);
-        
-        if (!m_SignalsManager)
-        {
-            Print("[AUS_MinigunBarrelController] ERROR: SignalsManagerComponent not found!", LogLevel.ERROR);
+        if (!m_SignalsManager || !m_Muzzle)
             return;
-        }
-        
-        if (!m_Muzzle)
-        {
-            Print("[AUS_MinigunBarrelController] ERROR: BaseMuzzleComponent not found!", LogLevel.ERROR);
-            return;
-        }
         
         InitializeSignals();
         InitializeAnimationVariables();
@@ -115,11 +92,11 @@ class AUS_MinigunBarrelController : ScriptGameComponent
         m_iPreviousAmmoCount = m_Muzzle.GetAmmoCount();
         m_fLastFireTime = System.GetTickCount();
         m_fLastStateChangeTime = System.GetTickCount();
-        m_fInitTime = System.GetTickCount();
         
         // Start with weapon firing blocked
         m_bWeaponFiringBlocked = true;
         
+        Print("[AUS_MinigunBarrelController] Component initialized successfully", LogLevel.NORMAL);
         SetEventMask(owner, EntityEvent.FRAME);
     }
     
@@ -133,27 +110,18 @@ class AUS_MinigunBarrelController : ScriptGameComponent
         m_iSpinUpActiveSignal = m_SignalsManager.AddOrFindMPSignal("AUS_SpinUpActive", 0.1, 1.0/30.0, 0, SignalCompressionFunc.Range01);
         m_iSpinDownActiveSignal = m_SignalsManager.AddOrFindMPSignal("AUS_SpinDownActive", 0.1, 1.0/30.0, 0, SignalCompressionFunc.Range01);
         m_iFiringActiveSignal = m_SignalsManager.AddOrFindMPSignal("AUS_FiringActive", 0.1, 1.0/30.0, 0, SignalCompressionFunc.Range01);
-        
-        DebugPrint("Audio signals initialized");
-        GetGame().GetCallqueue().CallLater(DelayedInitMessage, INIT_DEBUG_DELAY, false);
     }
     
     //------------------------------------------------------------------------------------------------
     private void InitializeAnimationVariables()
     {
         if (!m_AnimationComponent)
-        {
-            DebugPrint("AUS_WeaponAnimationComponent not found - animation integration disabled");
             return;
-        }
             
         m_iBarrelSpinSpeedVar = m_AnimationComponent.BindVariableFloat("BarrelSpinSpeed");
         m_iSpinStateVar = m_AnimationComponent.BindVariableInt("SpinState");
         m_iFiringVar = m_AnimationComponent.BindVariableBool("Firing");
         m_iVehicleFireReleasedVar = m_AnimationComponent.BindVariableBool("VehicleFireReleased");
-        
-        DebugPrint("Animation variables bound successfully");
-        GetGame().GetCallqueue().CallLater(DelayedAnimationMessage, INIT_DEBUG_DELAY + 100, false);
     }
     
     //------------------------------------------------------------------------------------------------
@@ -214,9 +182,6 @@ class AUS_MinigunBarrelController : ScriptGameComponent
     //------------------------------------------------------------------------------------------------
     private void UpdateStateMachineWithFiringDelay(bool isFiring, float currentTime, float timeSlice)
     {
-        bool stateChanged = false;
-        AUS_BarrelSpinState previousState = m_eCurrentState;
-        
         bool inDeadZone = (currentTime - m_fLastStateChangeTime) < m_fTriggerDeadZone;
         
         switch (m_eCurrentState)
@@ -225,7 +190,6 @@ class AUS_MinigunBarrelController : ScriptGameComponent
                 if (isFiring)
                 {
                     StartSpinUp(currentTime);
-                    stateChanged = true;
                 }
                 break;
                 
@@ -233,7 +197,6 @@ class AUS_MinigunBarrelController : ScriptGameComponent
                 if (m_fStateTimer >= m_fSpinUpTime)
                 {
                     m_bSpinUpComplete = true;
-                    DebugPrintImmediate("SPIN_UP completed at " + m_fStateTimer.ToString() + "ms");
                 }
                 
                 if (m_bSpinUpComplete)
@@ -241,24 +204,19 @@ class AUS_MinigunBarrelController : ScriptGameComponent
                     if (isFiring)
                     {
                         EnterReadyToFireState(currentTime);
-                        stateChanged = true;
                     }
                     else if (m_bForceSpinDown)
                     {
                         StartSpinDown(currentTime);
-                        stateChanged = true;
-                        DebugPrintImmediate("FORCED transition to SPIN_DOWN");
                     }
                     else if (!isFiring)
                     {
                         StartSpinDown(currentTime);
-                        stateChanged = true;
                     }
                 }
                 else if (!isFiring && !inDeadZone)
                 {
                     m_bForceSpinDown = true;
-                    DebugPrintImmediate("Will FORCE SPIN_DOWN when spin-up completes");
                 }
                 break;
                 
@@ -267,31 +225,16 @@ class AUS_MinigunBarrelController : ScriptGameComponent
                 {
                     if (isFiring)
                     {
-                        float actualDelay = m_fStateTimer;
                         EnterFiringState(currentTime);
-                        stateChanged = true;
-                        DebugPrintImmediate("Firing delay completed after " + actualDelay.ToString() + "ms");
                     }
                     else
                     {
                         StartSpinDown(currentTime);
-                        stateChanged = true;
                     }
                 }
                 else if (!isFiring && !inDeadZone)
                 {
                     StartSpinDown(currentTime);
-                    stateChanged = true;
-                    DebugPrintImmediate("Trigger released during firing delay at " + m_fStateTimer.ToString() + "ms");
-                }
-                else
-                {
-                    static float lastDelayDebug = 0;
-                    if (m_fStateTimer - lastDelayDebug > 50.0)
-                    {
-                        DebugPrintImmediate("Firing delay progress: " + m_fStateTimer.ToString() + "ms / " + m_fFiringDelay.ToString() + "ms");
-                        lastDelayDebug = m_fStateTimer;
-                    }
                 }
                 break;
                 
@@ -299,7 +242,6 @@ class AUS_MinigunBarrelController : ScriptGameComponent
                 if (!isFiring)
                 {
                     StartSpinDown(currentTime);
-                    stateChanged = true;
                 }
                 break;
                 
@@ -307,23 +249,15 @@ class AUS_MinigunBarrelController : ScriptGameComponent
                 if (m_fStateTimer >= m_fSpinDownTime)
                 {
                     ReturnToIdle(currentTime);
-                    stateChanged = true;
                 }
                 else if (isFiring && !inDeadZone)
                 {
                     StartSpinUp(currentTime);
-                    stateChanged = true;
                 }
                 break;
         }
         
         m_fStateTimer += timeSlice * 1000.0;
-        
-        if (stateChanged)
-        {
-            DebugPrintImmediate("State changed: " + typename.EnumToString(AUS_BarrelSpinState, previousState) + 
-                      " -> " + typename.EnumToString(AUS_BarrelSpinState, m_eCurrentState));
-        }
     }
     
     //------------------------------------------------------------------------------------------------
@@ -335,8 +269,6 @@ class AUS_MinigunBarrelController : ScriptGameComponent
         m_bWasFiring = false;
         m_bSpinUpComplete = false;
         m_bForceSpinDown = false;
-        
-        DebugPrintImmediate("Starting SPIN_UP - Audio should play once");
     }
     
     //------------------------------------------------------------------------------------------------
@@ -347,8 +279,6 @@ class AUS_MinigunBarrelController : ScriptGameComponent
         m_fLastStateChangeTime = currentTime;
         m_bSpinUpComplete = false;
         m_bForceSpinDown = false;
-        
-        DebugPrintImmediate("Entering READY_TO_FIRE - Waiting for firing delay");
     }
     
     //------------------------------------------------------------------------------------------------
@@ -360,8 +290,6 @@ class AUS_MinigunBarrelController : ScriptGameComponent
         m_bWasFiring = true;
         m_bSpinUpComplete = false;
         m_bForceSpinDown = false;
-        
-        DebugPrintImmediate("Entering FIRING state - Loop should start NOW");
     }
     
     //------------------------------------------------------------------------------------------------
@@ -372,8 +300,6 @@ class AUS_MinigunBarrelController : ScriptGameComponent
         m_fLastStateChangeTime = currentTime;
         m_bSpinUpComplete = false;
         m_bForceSpinDown = false;
-        
-        DebugPrintImmediate("Starting SPIN_DOWN - Audio should play once");
     }
     
     //------------------------------------------------------------------------------------------------
@@ -386,8 +312,6 @@ class AUS_MinigunBarrelController : ScriptGameComponent
         m_bWasFiring = false;
         m_bSpinUpComplete = false;
         m_bForceSpinDown = false;
-        
-        DebugPrintImmediate("Returned to IDLE");
     }
     
     //------------------------------------------------------------------------------------------------
@@ -471,15 +395,6 @@ class AUS_MinigunBarrelController : ScriptGameComponent
         if (shouldLockReload != m_bReloadLocked)
         {
             m_bReloadLocked = shouldLockReload;
-            
-            if (m_bReloadLocked)
-            {
-                DebugPrint("Reload locked - barrel spinning");
-            }
-            else
-            {
-                DebugPrint("Reload unlocked");
-            }
         }
     }
     
@@ -493,66 +408,12 @@ class AUS_MinigunBarrelController : ScriptGameComponent
             if (shouldAllowFiring)
             {
                 m_bWeaponFiringBlocked = false;
-                DebugPrintImmediate("Weapon firing ENABLED - Ready to fire");
             }
             else
             {
                 m_bWeaponFiringBlocked = true;
-                DebugPrintImmediate("Weapon firing BLOCKED - Barrels not ready");
             }
         }
-    }
-    
-    //------------------------------------------------------------------------------------------------
-    private void DelayedInitMessage()
-    {
-        Print("[AUS_MinigunBarrelController] === WEAPON FIRING CONTROL INITIALIZATION COMPLETE ===", LogLevel.NORMAL);
-        Print("[AUS_MinigunBarrelController] Component ready for testing", LogLevel.NORMAL);
-    }
-    
-    //------------------------------------------------------------------------------------------------
-    private void DelayedAnimationMessage()
-    {
-        if (m_AnimationComponent)
-        {
-            Print("[AUS_MinigunBarrelController] Animation system: ACTIVE", LogLevel.NORMAL);
-        }
-        else
-        {
-            Print("[AUS_MinigunBarrelController] Animation system: DISABLED - Component not found", LogLevel.ERROR);
-        }
-    }
-    
-    //------------------------------------------------------------------------------------------------
-    private void DebugPrint(string message)
-    {
-        float currentTime = System.GetTickCount();
-        
-        if (currentTime - m_fInitTime < INIT_DEBUG_DELAY)
-            return;
-        
-        if (currentTime - m_fLastDebugTime >= DEBUG_INTERVAL)
-        {
-            Print("[AUS_MinigunBarrelController] " + message + 
-      " | State: " + typename.EnumToString(AUS_BarrelSpinState, m_eCurrentState) + 
-      " | Speed: " + m_fCurrentSpinSpeed.ToString() + 
-      " | Timer: " + m_fStateTimer.ToString(), LogLevel.NORMAL);
-            m_fLastDebugTime = currentTime;
-        }
-    }
-    
-    //------------------------------------------------------------------------------------------------
-    private void DebugPrintImmediate(string message)
-    {
-        float currentTime = System.GetTickCount();
-        
-        if (currentTime - m_fInitTime < INIT_DEBUG_DELAY)
-            return;
-        
-        Print("[AUS_MinigunBarrelController] " + message + 
-      " | State: " + typename.EnumToString(AUS_BarrelSpinState, m_eCurrentState) + 
-      " | Speed: " + m_fCurrentSpinSpeed.ToString() + 
-      " | Timer: " + m_fStateTimer.ToString(), LogLevel.NORMAL);
     }
     
     //------------------------------------------------------------------------------------------------
