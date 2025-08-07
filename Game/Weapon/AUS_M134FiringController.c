@@ -18,7 +18,7 @@ class AUS_MinigunBarrelController : ScriptGameComponent
     [Attribute("2151", UIWidgets.EditBox, "Spin-down duration (ms)")]
     protected float m_fSpinDownTime;
     
-    [Attribute("150", UIWidgets.EditBox, "Firing delay after spin-up (ms)")]
+    [Attribute("75", UIWidgets.EditBox, "Firing delay after spin-up (ms)")]
     protected float m_fFiringDelay;
     
     [Attribute("1750", UIWidgets.EditBox, "Maximum RPM")]
@@ -271,15 +271,13 @@ class AUS_MinigunBarrelController : ScriptGameComponent
                 break;
                 
             case AUS_BarrelSpinState.READY_TO_FIRE:
-                // Wait for firing delay to complete - ensure timer has actually elapsed
+                // Wait for firing delay to complete
                 if (m_fStateTimer >= m_fFiringDelay)
                 {
                     if (isFiring)
                     {
-                        float actualDelay = m_fStateTimer; // Capture before reset
                         EnterFiringState(currentTime);
                         stateChanged = true;
-                        DebugPrintImmediate("Firing delay completed after " + actualDelay.ToString() + "ms");
                     }
                     else
                     {
@@ -293,17 +291,6 @@ class AUS_MinigunBarrelController : ScriptGameComponent
                     // Trigger released during delay - go straight to spin down
                     StartSpinDown(currentTime);
                     stateChanged = true;
-                    DebugPrintImmediate("Trigger released during firing delay at " + m_fStateTimer.ToString() + "ms");
-                }
-                else
-                {
-                    // Debug the delay progress every so often
-                    static float lastDelayDebug = 0;
-                    if (m_fStateTimer - lastDelayDebug > 50.0) // Every 50ms
-                    {
-                        DebugPrintImmediate("Firing delay progress: " + m_fStateTimer.ToString() + "ms / " + m_fFiringDelay.ToString() + "ms");
-                        lastDelayDebug = m_fStateTimer;
-                    }
                 }
                 break;
                 
